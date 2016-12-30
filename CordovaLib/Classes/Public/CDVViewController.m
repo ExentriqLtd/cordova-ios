@@ -19,6 +19,7 @@
 
 #import <objc/message.h>
 #import "CDV.h"
+#import <objc/runtime.h>
 #import "CDVPlugin+Private.h"
 #import "CDVUIWebViewDelegate.h"
 #import "CDVConfigParser.h"
@@ -341,6 +342,23 @@
             }
         }
     }];
+    BOOL keyboardDisplayRequiresUserAction = NO;
+    if ([self.webView respondsToSelector:@selector(setKeyboardDisplayRequiresUserAction:)]) {
+        [self.webView setValue:[NSNumber numberWithBool:keyboardDisplayRequiresUserAction] forKey:@"keyboardDisplayRequiresUserAction"];
+    }
+    if (!keyboardDisplayRequiresUserAction) {
+        [self keyboardDisplayDoesNotRequireUserAction];
+    }
+}
+- (void) keyboardDisplayDoesNotRequireUserAction {
+    SEL sel = sel_getUid("_startAssistingNode:userIsInteracting:blurPreviousNode:userObject:");
+    Class WKContentView = NSClassFromString(@"WKContentView");
+    Method method = class_getInstanceMethod(WKContentView, sel);
+    IMP originalImp = method_getImplementation(method);
+    IMP imp = imp_implementationWithBlock(^void(id me, void* arg0, BOOL arg1, BOOL arg2, id arg3) {
+      ((void (*)(id, SEL, void*, BOOL, BOOL, id))originalImp)(me, sel, arg0, TRUE, arg2, arg3);
+    });
+    method_setImplementation(method, imp);
 }
 
 -(void)viewWillAppear:(BOOL)animated
