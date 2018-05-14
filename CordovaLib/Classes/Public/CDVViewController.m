@@ -28,6 +28,7 @@
 #import "NSDictionary+CordovaPreferences.h"
 #import "CDVLocalStorage.h"
 #import "CDVCommandDelegateImpl.h"
+#import <Foundation/NSCharacterSet.h>
 
 @interface CDVViewController () {
     NSInteger _userAgentLockToken;
@@ -320,10 +321,11 @@
 
     // /////////////////
     NSURL* appURL = [self appUrl];
+    __weak __typeof__(self) weakSelf = self;
 
     [CDVUserAgentUtil acquireLock:^(NSInteger lockToken) {
-        _userAgentLockToken = lockToken;
-        [CDVUserAgentUtil setUserAgent:self.userAgent lockToken:lockToken];
+        // Fix the memory leak caused by the strong reference.
+        [weakSelf setLockToken:lockToken];
         if (appURL) {
             NSURLRequest* appReq = [NSURLRequest requestWithURL:appURL cachePolicy:NSURLRequestUseProtocolCachePolicy timeoutInterval:20.0];
             [self.webViewEngine loadRequest:appReq];
@@ -333,7 +335,7 @@
 
             NSURL* errorUrl = [self errorURL];
             if (errorUrl) {
-                errorUrl = [NSURL URLWithString:[NSString stringWithFormat:@"?error=%@", [loadErr stringByAddingPercentEscapesUsingEncoding:NSUTF8StringEncoding]] relativeToURL:errorUrl];
+                errorUrl = [NSURL URLWithString:[NSString stringWithFormat:@"?error=%@", [loadErr stringByAddingPercentEncodingWithAllowedCharacters:NSCharacterSet.URLPathAllowedCharacterSet]] relativeToURL:errorUrl];
                 NSLog(@"%@", [errorUrl absoluteString]);
                 [self.webViewEngine loadRequest:[NSURLRequest requestWithURL:errorUrl]];
             } else {
@@ -349,7 +351,12 @@
     if (!keyboardDisplayRequiresUserAction) {
         [self keyboardDisplayDoesNotRequireUserAction];
     }
+
+    NSString* bgColorString = [self.settings cordovaSettingForKey:@"BackgroundColor"];
+    UIColor* bgColor = [self colorFromColorString:bgColorString];
+    [self.webView setBackgroundColor:bgColor];
 }
+
 - (void) keyboardDisplayDoesNotRequireUserAction {
     SEL sel = sel_getUid("_startAssistingNode:userIsInteracting:blurPreviousNode:userObject:");
     Class WKContentView = NSClassFromString(@"WKContentView");
@@ -359,6 +366,12 @@
       ((void (*)(id, SEL, void*, BOOL, BOOL, id))originalImp)(me, sel, arg0, TRUE, arg2, arg3);
     });
     method_setImplementation(method, imp);
+}
+
+- (void)setLockToken:(NSInteger)lockToken
+{
+	_userAgentLockToken = lockToken;
+	[CDVUserAgentUtil setUserAgent:self.userAgent lockToken:lockToken];
 }
 
 -(void)viewWillAppear:(BOOL)animated
@@ -403,6 +416,52 @@
     [[NSNotificationCenter defaultCenter] postNotification:[NSNotification notificationWithName:CDVViewWillTransitionToSizeNotification object:[NSValue valueWithCGSize:size]]];
 }
 
+- (UIColor*)colorFromColorString:(NSString*)colorString
+{
+    // No value, nothing to do
+    if (!colorString) {
+        return nil;
+    }
+    
+    // Validate format
+    NSError* error = NULL;
+    NSRegularExpression* regex = [NSRegularExpression regularExpressionWithPattern:@"^(#[0-9A-F]{3}|(0x|#)([0-9A-F]{2})?[0-9A-F]{6})$" options:NSRegularExpressionCaseInsensitive error:&error];
+    NSUInteger countMatches = [regex numberOfMatchesInString:colorString options:0 range:NSMakeRange(0, [colorString length])];
+    
+    if (!countMatches) {
+        return nil;
+    }
+    
+    // #FAB to #FFAABB
+    if ([colorString hasPrefix:@"#"] && [colorString length] == 4) {
+        NSString* r = [colorString substringWithRange:NSMakeRange(1, 1)];
+        NSString* g = [colorString substringWithRange:NSMakeRange(2, 1)];
+        NSString* b = [colorString substringWithRange:NSMakeRange(3, 1)];
+        colorString = [NSString stringWithFormat:@"#%@%@%@%@%@%@", r, r, g, g, b, b];
+    }
+    
+    // #RRGGBB to 0xRRGGBB
+    colorString = [colorString stringByReplacingOccurrencesOfString:@"#" withString:@"0x"];
+    
+    // 0xRRGGBB to 0xAARRGGBB
+    if ([colorString hasPrefix:@"0x"] && [colorString length] == 8) {
+        colorString = [@"0xFF" stringByAppendingString:[colorString substringFromIndex:2]];
+    }
+    
+    // 0xAARRGGBB to int
+    unsigned colorValue = 0;
+    NSScanner *scanner = [NSScanner scannerWithString:colorString];
+    if (![scanner scanHexInt:&colorValue]) {
+        return nil;
+    }
+    
+    // int to UIColor
+    return [UIColor colorWithRed:((float)((colorValue & 0x00FF0000) >> 16))/255.0
+                           green:((float)((colorValue & 0x0000FF00) >>  8))/255.0
+                            blue:((float)((colorValue & 0x000000FF) >>  0))/255.0
+                           alpha:((float)((colorValue & 0xFF000000) >> 24))/255.0];
+}
+
 - (NSArray*)parseInterfaceOrientations:(NSArray*)orientations
 {
     NSMutableArray* result = [[NSMutableArray alloc] init];
@@ -443,7 +502,6 @@
 #else  
 - (UIInterfaceOrientationMask)supportedInterfaceOrientations
 #endif
-
 {
     NSUInteger ret = 0;
 
